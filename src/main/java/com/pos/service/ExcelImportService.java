@@ -69,7 +69,8 @@ public class ExcelImportService {
 
     /**
      * Import loyalty programs from Excel file
-     * Expected columns: Name, Type, BuyQty, FreeQty, DiscountPercent, ProductBarcode, Category, StartDate, EndDate
+     * Expected columns: Name, Type(0=DISCOUNT/1=BUY_X_GET_Y), TriggerProductIds, RewardProductIds,
+     *                    MinQuantity, RewardQuantity, DiscountPercent, Active, StartDate, EndDate
      */
     public List<Loyalty> importLoyaltyPrograms(MultipartFile file) throws Exception {
         List<Loyalty> loyalties = new ArrayList<>();
@@ -86,38 +87,37 @@ public class ExcelImportService {
                 Loyalty loyalty = new Loyalty();
                 loyalty.setName(name);
                 
-                // Parse type (BOGO, DISCOUNT, POINTS)
-                String typeStr = getCellString(row.getCell(1));
-                if (typeStr != null) {
-                    try {
-                        loyalty.setType(Loyalty.LoyaltyType.valueOf(typeStr.toUpperCase()));
-                    } catch (IllegalArgumentException e) {
-                        loyalty.setType(Loyalty.LoyaltyType.BOGO);
-                    }
-                } else {
-                    loyalty.setType(Loyalty.LoyaltyType.BOGO);
-                }
+                // Parse type: 0 = DISCOUNT, 1 = BUY_X_GET_Y
+                Integer typeVal = getCellInt(row.getCell(1));
+                loyalty.setType(typeVal != null && typeVal == 1 ? 1 : 0);
                 
-                Integer buyQty = getCellInt(row.getCell(2));
-                loyalty.setBuyQuantity(buyQty != null ? buyQty : 1);
+                // Trigger product IDs (comma-separated barcodes)
+                String triggerIds = getCellString(row.getCell(2));
+                loyalty.setTriggerProductIds(triggerIds != null ? triggerIds.trim() : null);
                 
-                Integer freeQty = getCellInt(row.getCell(3));
-                loyalty.setFreeQuantity(freeQty != null ? freeQty : 1);
+                // Reward product IDs (comma-separated barcodes)
+                String rewardIds = getCellString(row.getCell(3));
+                loyalty.setRewardProductIds(rewardIds != null ? rewardIds.trim() : null);
                 
-                BigDecimal discountPercent = getCellBigDecimal(row.getCell(4));
+                Integer minQty = getCellInt(row.getCell(4));
+                loyalty.setMinQuantity(minQty != null && minQty > 0 ? minQty : 1);
+                
+                Integer rewardQty = getCellInt(row.getCell(5));
+                loyalty.setRewardQuantity(rewardQty != null && rewardQty > 0 ? rewardQty : 1);
+                
+                BigDecimal discountPercent = getCellBigDecimal(row.getCell(6));
                 loyalty.setDiscountPercent(discountPercent != null ? discountPercent : BigDecimal.ZERO);
                 
-                loyalty.setProductBarcode(getCellString(row.getCell(5)));
-                loyalty.setCategory(getCellString(row.getCell(6)));
+                // Active flag
+                String activeStr = getCellString(row.getCell(7));
+                loyalty.setActive(activeStr == null || activeStr.isEmpty() || "1".equals(activeStr) || "true".equalsIgnoreCase(activeStr));
                 
                 // Parse dates
-                LocalDateTime startDate = getCellDateTime(row.getCell(7));
+                LocalDateTime startDate = getCellDateTime(row.getCell(8));
                 loyalty.setStartDate(startDate != null ? startDate : LocalDateTime.now());
                 
-                LocalDateTime endDate = getCellDateTime(row.getCell(8));
+                LocalDateTime endDate = getCellDateTime(row.getCell(9));
                 loyalty.setEndDate(endDate != null ? endDate : LocalDateTime.now().plusYears(1));
-                
-                loyalty.setActive(true);
                 
                 loyalties.add(loyaltyRepository.save(loyalty));
             }

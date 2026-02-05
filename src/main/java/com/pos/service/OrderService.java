@@ -12,10 +12,8 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Optional;
-import java.util.UUID;
+import java.util.*;
+import java.util.stream.Collectors;
 
 @Service
 public class OrderService {
@@ -31,9 +29,6 @@ public class OrderService {
 
     @Autowired
     private LoyaltyRepository loyaltyRepository;
-
-    @Autowired
-    private PromotionRepository promotionRepository;
 
     @Transactional
     public Order createOrder(CreateOrderDTO dto) {
@@ -52,16 +47,81 @@ public class OrderService {
         order.setCashierName(dto.getCashierName());
         order.setStatus(Order.OrderStatus.COMPLETED);
 
+        // Build cart map: barcode -> quantity
+        Map<String, Integer> cartMap = new HashMap<>();
+        Map<String, Product> productMap = new HashMap<>();
+        for (CartItemDTO cartItem : dto.getItems()) {
+            Product product = productRepository.findByBarcode(cartItem.getBarcode())
+                .orElseThrow(() -> new RuntimeException("Product not found: " + cartItem.getBarcode()));
+            cartMap.put(product.getBarcode(), cartItem.getQuantity());
+            productMap.put(product.getBarcode(), product);
+        }
+
+        // Get active loyalties
+        List<Loyalty> activeLoyalties = loyaltyRepository.findActiveLoyalties(LocalDateTime.now());
+
+        // Calculate loyalty rewards applied to each reward barcode
+        // Map: rewardBarcode -> list of applied loyalty descriptions and discount amounts
+        Map<String, BigDecimal> rewardDiscounts = new HashMap<>();
+        Map<String, Integer> rewardFreeItems = new HashMap<>();
+        Map<String, List<String>> rewardPromoNames = new HashMap<>();
+
+        for (Loyalty loyalty : activeLoyalties) {
+            List<String> triggerBarcodes = loyalty.getTriggerBarcodes();
+            List<String> rewardBarcodes = loyalty.getRewardBarcodes();
+
+            if (triggerBarcodes.isEmpty() || rewardBarcodes.isEmpty()) continue;
+
+            // Check if any trigger product is in the cart with sufficient quantity
+            boolean triggered = false;
+            int triggerSets = Integer.MAX_VALUE;
+            for (String triggerBarcode : triggerBarcodes) {
+                Integer qty = cartMap.get(triggerBarcode);
+                if (qty != null && qty >= loyalty.getMinQuantity()) {
+                    triggered = true;
+                    int sets = qty / loyalty.getMinQuantity();
+                    triggerSets = Math.min(triggerSets, sets);
+                }
+            }
+
+            if (!triggered) continue;
+
+            // Apply rewards to reward products that are in cart
+            for (String rewardBarcode : rewardBarcodes) {
+                if (!cartMap.containsKey(rewardBarcode)) continue;
+                Product rewardProduct = productMap.get(rewardBarcode);
+                if (rewardProduct == null) continue;
+
+                if (loyalty.isBuyXGetY()) {
+                    // BUY X GET Y: give free items
+                    int freeQty = Math.min(triggerSets * loyalty.getRewardQuantity(), cartMap.get(rewardBarcode));
+                    int existing = rewardFreeItems.getOrDefault(rewardBarcode, 0);
+                    rewardFreeItems.put(rewardBarcode, existing + freeQty);
+                    rewardPromoNames.computeIfAbsent(rewardBarcode, k -> new ArrayList<>())
+                        .add(loyalty.getName() + " (+" + freeQty + " free)");
+                } else if (loyalty.isDiscount()) {
+                    // DISCOUNT: apply percentage discount
+                    int rewardQty = Math.min(triggerSets * loyalty.getRewardQuantity(), cartMap.get(rewardBarcode));
+                    BigDecimal discountableAmount = rewardProduct.getPrice().multiply(new BigDecimal(rewardQty));
+                    BigDecimal discount = discountableAmount.multiply(loyalty.getDiscountPercent())
+                        .divide(new BigDecimal(100), 2, RoundingMode.HALF_UP);
+                    BigDecimal existing = rewardDiscounts.getOrDefault(rewardBarcode, BigDecimal.ZERO);
+                    rewardDiscounts.put(rewardBarcode, existing.add(discount));
+                    rewardPromoNames.computeIfAbsent(rewardBarcode, k -> new ArrayList<>())
+                        .add(loyalty.getName() + " (-" + loyalty.getDiscountPercent() + "%)");
+                }
+            }
+        }
+
+        // Build order items
         List<OrderItem> orderItems = new ArrayList<>();
         BigDecimal subtotal = BigDecimal.ZERO;
         BigDecimal totalTax = BigDecimal.ZERO;
         BigDecimal totalDiscount = BigDecimal.ZERO;
-        List<String> appliedPromotions = new ArrayList<>();
 
         for (CartItemDTO cartItem : dto.getItems()) {
-            Product product = productRepository.findByBarcode(cartItem.getBarcode())
-                .orElseThrow(() -> new RuntimeException("Product not found: " + cartItem.getBarcode()));
-
+            Product product = productMap.get(cartItem.getBarcode());
+            
             OrderItem item = new OrderItem();
             item.setOrder(order);
             item.setProduct(product);
@@ -71,44 +131,37 @@ public class OrderService {
             item.setUnitPrice(product.getPrice());
             item.setTaxRate(product.getTaxRate() != null ? product.getTaxRate() : BigDecimal.ZERO);
 
-            // Calculate base subtotal
             BigDecimal itemSubtotal = product.getPrice().multiply(new BigDecimal(cartItem.getQuantity()));
             item.setSubtotal(itemSubtotal);
 
-            // Apply BOGO loyalty
-            int freeItems = applyBogo(product, cartItem.getQuantity(), appliedPromotions);
+            // Apply loyalty rewards
+            int freeItems = rewardFreeItems.getOrDefault(product.getBarcode(), 0);
             item.setFreeItems(freeItems);
-
-            // Calculate discount from BOGO
             BigDecimal bogoDiscount = product.getPrice().multiply(new BigDecimal(freeItems));
-            
-            // Apply percentage/fixed promotions
-            BigDecimal promoDiscount = applyPromotions(product, itemSubtotal, appliedPromotions);
-            
-            BigDecimal itemDiscount = bogoDiscount.add(promoDiscount);
+
+            BigDecimal percentDiscount = rewardDiscounts.getOrDefault(product.getBarcode(), BigDecimal.ZERO);
+            BigDecimal itemDiscount = bogoDiscount.add(percentDiscount);
             item.setDiscountAmount(itemDiscount);
 
-            // Calculate tax on discounted amount
+            // Promotions applied label
+            List<String> promoNames = rewardPromoNames.getOrDefault(product.getBarcode(), Collections.emptyList());
+            if (!promoNames.isEmpty()) {
+                item.setPromotionApplied(String.join(", ", promoNames));
+            }
+
             BigDecimal taxableAmount = itemSubtotal.subtract(itemDiscount);
+            if (taxableAmount.compareTo(BigDecimal.ZERO) < 0) taxableAmount = BigDecimal.ZERO;
             BigDecimal itemTax = taxableAmount.multiply(item.getTaxRate()).setScale(2, RoundingMode.HALF_UP);
             item.setTaxAmount(itemTax);
 
-            // Calculate item total
             BigDecimal itemTotal = taxableAmount.add(itemTax);
             item.setTotalAmount(itemTotal);
-
-            if (!appliedPromotions.isEmpty()) {
-                item.setPromotionApplied(String.join(", ", appliedPromotions));
-                appliedPromotions.clear(); // Clear for next item
-            }
 
             orderItems.add(item);
 
             subtotal = subtotal.add(itemSubtotal);
             totalTax = totalTax.add(itemTax);
             totalDiscount = totalDiscount.add(itemDiscount);
-
-            // NOTE: Not tracking inventory as per requirement
         }
 
         order.setItems(orderItems);
@@ -123,55 +176,6 @@ public class OrderService {
         sessionRepository.save(session);
 
         return orderRepository.save(order);
-    }
-
-    private int applyBogo(Product product, int quantity, List<String> appliedPromotions) {
-        List<Loyalty> loyalties = loyaltyRepository.findApplicableLoyalties(
-            product.getBarcode(), 
-            product.getCategory(), 
-            LocalDateTime.now()
-        );
-
-        int totalFreeItems = 0;
-        for (Loyalty loyalty : loyalties) {
-            if (loyalty.getType() == Loyalty.LoyaltyType.BOGO && 
-                loyalty.getBuyQuantity() != null && loyalty.getFreeQuantity() != null) {
-                int sets = quantity / loyalty.getBuyQuantity();
-                int freeItems = sets * loyalty.getFreeQuantity();
-                totalFreeItems += freeItems;
-                if (freeItems > 0) {
-                    appliedPromotions.add(loyalty.getName() + " (+" + freeItems + " free)");
-                }
-            }
-        }
-        return totalFreeItems;
-    }
-
-    private BigDecimal applyPromotions(Product product, BigDecimal subtotal, List<String> appliedPromotions) {
-        List<Promotion> promotions = promotionRepository.findApplicablePromotions(
-            product.getBarcode(),
-            product.getCategory(),
-            LocalDateTime.now()
-        );
-
-        BigDecimal totalDiscount = BigDecimal.ZERO;
-        for (Promotion promotion : promotions) {
-            BigDecimal discount = BigDecimal.ZERO;
-            
-            if (promotion.getDiscountType() == Promotion.DiscountType.PERCENTAGE && 
-                promotion.getDiscountValue() != null) {
-                discount = subtotal.multiply(promotion.getDiscountValue())
-                    .divide(new BigDecimal(100), 2, RoundingMode.HALF_UP);
-                appliedPromotions.add(promotion.getName() + " (-" + promotion.getDiscountValue() + "%)");
-            } else if (promotion.getDiscountType() == Promotion.DiscountType.FIXED_AMOUNT && 
-                       promotion.getDiscountValue() != null) {
-                discount = promotion.getDiscountValue().min(subtotal);
-                appliedPromotions.add(promotion.getName() + " (-$" + discount + ")");
-            }
-            
-            totalDiscount = totalDiscount.add(discount);
-        }
-        return totalDiscount;
     }
 
     private String generateOrderNumber() {

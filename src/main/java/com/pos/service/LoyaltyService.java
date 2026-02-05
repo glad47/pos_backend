@@ -30,10 +30,6 @@ public class LoyaltyService {
         return loyaltyRepository.findActiveLoyalties(LocalDateTime.now());
     }
 
-    public List<Loyalty> getApplicableLoyalties(String barcode, String category) {
-        return loyaltyRepository.findApplicableLoyalties(barcode, category, LocalDateTime.now());
-    }
-
     public Loyalty saveLoyalty(Loyalty loyalty) {
         return loyaltyRepository.save(loyalty);
     }
@@ -62,42 +58,36 @@ public class LoyaltyService {
                 Row row = rows.next();
                 Loyalty loyalty = new Loyalty();
 
-                // Column order: Name, Type, BuyQty, FreeQty, DiscountPercent, ProductBarcode, Category, StartDate, EndDate
+                // Column order: Name, Type(0 or 1), TriggerProductIds, RewardProductIds,
+                //               MinQuantity, RewardQuantity, DiscountPercent, Active, StartDate, EndDate
                 loyalty.setName(getCellStringValue(row.getCell(0)));
-                
-                // Parse type enum
-                String typeStr = getCellStringValue(row.getCell(1));
-                try {
-                    loyalty.setType(Loyalty.LoyaltyType.valueOf(typeStr.toUpperCase()));
-                } catch (IllegalArgumentException e) {
-                    loyalty.setType(Loyalty.LoyaltyType.BOGO);
-                }
-                
-                loyalty.setBuyQuantity((int) getCellNumericValue(row.getCell(2)));
-                loyalty.setFreeQuantity((int) getCellNumericValue(row.getCell(3)));
-                loyalty.setDiscountPercent(BigDecimal.valueOf(getCellNumericValue(row.getCell(4))));
-                
-                String barcode = getCellStringValue(row.getCell(5));
-                loyalty.setProductBarcode(barcode.isEmpty() ? null : barcode);
-                
-                String category = getCellStringValue(row.getCell(6));
-                loyalty.setCategory(category.isEmpty() ? null : category);
-                
-                String startDate = getCellStringValue(row.getCell(7));
+
+                int typeVal = (int) getCellNumericValue(row.getCell(1));
+                loyalty.setType(typeVal == 1 ? 1 : 0);
+
+                loyalty.setTriggerProductIds(getCellStringValue(row.getCell(2)));
+                loyalty.setRewardProductIds(getCellStringValue(row.getCell(3)));
+                loyalty.setMinQuantity(Math.max(1, (int) getCellNumericValue(row.getCell(4))));
+                loyalty.setRewardQuantity(Math.max(1, (int) getCellNumericValue(row.getCell(5))));
+                loyalty.setDiscountPercent(BigDecimal.valueOf(getCellNumericValue(row.getCell(6))));
+
+                String activeStr = getCellStringValue(row.getCell(7));
+                loyalty.setActive(activeStr.isEmpty() || "1".equals(activeStr) || "true".equalsIgnoreCase(activeStr));
+
+                String startDate = getCellStringValue(row.getCell(8));
                 if (!startDate.isEmpty()) {
                     loyalty.setStartDate(LocalDateTime.parse(startDate, formatter));
                 } else {
                     loyalty.setStartDate(LocalDateTime.now());
                 }
-                
-                String endDate = getCellStringValue(row.getCell(8));
+
+                String endDate = getCellStringValue(row.getCell(9));
                 if (!endDate.isEmpty()) {
                     loyalty.setEndDate(LocalDateTime.parse(endDate, formatter));
                 } else {
                     loyalty.setEndDate(LocalDateTime.now().plusYears(1));
                 }
-                
-                loyalty.setActive(true);
+
                 loyalties.add(loyaltyRepository.save(loyalty));
             }
         }

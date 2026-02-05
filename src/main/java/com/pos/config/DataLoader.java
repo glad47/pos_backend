@@ -42,28 +42,33 @@ public class DataLoader implements CommandLineRunner {
         createProduct("011", "Soup", "Soup of the day", 5.99, 20, "Food", 0.08);
         createProduct("012", "Cookie", "Chocolate chip cookie", 1.99, 100, "Snacks", 0.05);
 
-        // Sample BOGO Loyalty
+        // Sample Loyalty: Buy 2 Coffees, get 1 Cookie free (BUY_X_GET_Y = type 1)
         Loyalty bogo1 = new Loyalty();
-        bogo1.setName("Buy 2 Get 1 Free Coffee");
-        bogo1.setType(Loyalty.LoyaltyType.BOGO);
-        bogo1.setBuyQuantity(2);
-        bogo1.setFreeQuantity(1);
-        bogo1.setProductBarcode("001");
+        bogo1.setName("Buy 2 Coffees Get 1 Cookie Free");
+        bogo1.setType(1); // BUY_X_GET_Y
+        bogo1.setTriggerProductIds("001");
+        bogo1.setRewardProductIds("012");
+        bogo1.setMinQuantity(2);
+        bogo1.setRewardQuantity(1);
+        bogo1.setDiscountPercent(BigDecimal.ZERO);
         bogo1.setStartDate(LocalDateTime.now().minusDays(30));
         bogo1.setEndDate(LocalDateTime.now().plusDays(60));
         bogo1.setActive(true);
         loyaltyRepository.save(bogo1);
 
-        Loyalty bogo2 = new Loyalty();
-        bogo2.setName("Buy 3 Get 1 Free Bakery");
-        bogo2.setType(Loyalty.LoyaltyType.BOGO);
-        bogo2.setBuyQuantity(3);
-        bogo2.setFreeQuantity(1);
-        bogo2.setCategory("Bakery");
-        bogo2.setStartDate(LocalDateTime.now().minusDays(30));
-        bogo2.setEndDate(LocalDateTime.now().plusDays(60));
-        bogo2.setActive(true);
-        loyaltyRepository.save(bogo2);
+        // Sample Loyalty: Buy any Coffee (001,002,003), get 10% off any Bakery (006,007,008) (DISCOUNT = type 0)
+        Loyalty disc1 = new Loyalty();
+        disc1.setName("Coffee + Bakery 10% Off");
+        disc1.setType(0); // DISCOUNT
+        disc1.setTriggerProductIds("001,002,003");
+        disc1.setRewardProductIds("006,007,008");
+        disc1.setMinQuantity(1);
+        disc1.setRewardQuantity(1);
+        disc1.setDiscountPercent(new BigDecimal("10"));
+        disc1.setStartDate(LocalDateTime.now().minusDays(30));
+        disc1.setEndDate(LocalDateTime.now().plusDays(60));
+        disc1.setActive(true);
+        loyaltyRepository.save(disc1);
 
         // Sample Promotions
         Promotion promo1 = new Promotion();
