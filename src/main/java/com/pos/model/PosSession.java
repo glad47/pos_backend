@@ -58,4 +58,9 @@ public class PosSession {
     public enum SessionStatus {
         OPEN, CLOSED
     }
+
+    public boolean isActive() {
+        return this.status == SessionStatus.OPEN && this.closedAt == null;
+    }
+
 }

@@ -52,8 +52,9 @@ public class OrderItem {
     @Column(nullable = false, precision = 12, scale = 2)
     private BigDecimal subtotal;
 
+    // Discount field - used by OrderService
     @Column(name = "discount_amount", nullable = false, precision = 12, scale = 2)
-    private BigDecimal discountAmount = BigDecimal.ZERO;
+    private BigDecimal discount = BigDecimal.ZERO;
 
     @Column(name = "tax_rate", nullable = false, precision = 5, scale = 4)
     private BigDecimal taxRate = BigDecimal.ZERO;
@@ -61,16 +62,43 @@ public class OrderItem {
     @Column(name = "tax_amount", nullable = false, precision = 12, scale = 2)
     private BigDecimal taxAmount = BigDecimal.ZERO;
 
+    // Total price field - used by OrderService
     @Column(name = "total_amount", nullable = false, precision = 12, scale = 2)
-    private BigDecimal totalAmount;
+    private BigDecimal totalPrice;
 
     @Column(name = "free_items", nullable = false)
     private Integer freeItems = 0;
 
+    // Promotion name - used to track which promotion was applied
+    @Column(name = "promotion_name", length = 255)
+    private String promotionName;
+
+    // Legacy field for compatibility
     @Column(name = "promotion_applied")
     private String promotionApplied;
+
+    // Is this item a reward (free item from Buy X Get Y promotion)
+    @Column(name = "is_reward", nullable = false)
+    private boolean isReward = false;
 
     @CreationTimestamp
     @Column(name = "created_at", updatable = false)
     private LocalDateTime createdAt;
+
+    // Backward compatibility getters/setters
+    public BigDecimal getDiscountAmount() {
+        return discount;
+    }
+
+    public void setDiscountAmount(BigDecimal discount) {
+        this.discount = discount;
+    }
+
+    public BigDecimal getTotalAmount() {
+        return totalPrice;
+    }
+
+    public void setTotalAmount(BigDecimal totalPrice) {
+        this.totalPrice = totalPrice;
+    }
 }

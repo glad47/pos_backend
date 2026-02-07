@@ -21,7 +21,10 @@ import java.util.List;
     @Index(name = "idx_session_id", columnList = "session_id"),
     @Index(name = "idx_order_status", columnList = "status"),
     @Index(name = "idx_order_created_at", columnList = "created_at"),
-    @Index(name = "idx_payment_method", columnList = "payment_method")
+    @Index(name = "idx_payment_method", columnList = "payment_method"),
+    @Index(name = "idx_customer_phone", columnList = "customer_phone"),
+    @Index(name = "idx_customer_vat", columnList = "customer_vat"),
+    @Index(name = "idx_order_type", columnList = "order_type")
 })
 @Data
 @NoArgsConstructor
@@ -47,6 +50,16 @@ public class Order {
     @Column(name = "cashier_name", nullable = false)
     private String cashierName;
 
+    // Customer Information
+    @Column(name = "customer_name", length = 255)
+    private String customerName;
+
+    @Column(name = "customer_phone", length = 50)
+    private String customerPhone;
+
+    @Column(name = "customer_vat", length = 50)
+    private String customerVat;
+
     @OneToMany(mappedBy = "order", cascade = CascadeType.ALL, orphanRemoval = true)
     @JsonIgnoreProperties({"order"})
     private List<OrderItem> items = new ArrayList<>();
@@ -71,6 +84,26 @@ public class Order {
     @Column(nullable = false)
     private OrderStatus status = OrderStatus.COMPLETED;
 
+    // Order Type: SALE or RETURN
+    @Enumerated(EnumType.STRING)
+    @Column(name = "order_type", nullable = false)
+    private OrderType orderType = OrderType.SALE;
+
+    // Reference to original sale order for returns
+    @Column(name = "original_order_number", length = 50)
+    private String originalOrderNumber;
+
+    @Column(name = "return_reason", length = 500)
+    private String returnReason;
+
+    // JSON storage for order data in specified format
+    @Column(name = "order_json", columnDefinition = "TEXT")
+    private String orderJson;
+
+    // Sync status - tracks if order has been sent to backend
+    @Column(name = "sync_status", nullable = false)
+    private boolean syncStatus = false;
+
     @Column(columnDefinition = "TEXT")
     private String notes;
 
@@ -88,5 +121,9 @@ public class Order {
 
     public enum OrderStatus {
         PENDING, COMPLETED, CANCELLED, REFUNDED
+    }
+
+    public enum OrderType {
+        SALE, RETURN
     }
 }

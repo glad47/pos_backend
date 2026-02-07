@@ -8,6 +8,7 @@ import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.util.List;
+import java.util.Map;
 
 @RestController
 @RequestMapping("/api/loyalty")
@@ -25,6 +26,29 @@ public class LoyaltyController {
     @GetMapping("/active")
     public List<Loyalty> getActiveLoyalties() {
         return loyaltyService.getActiveLoyalties();
+    }
+
+    /**
+     * GET /api/loyalty/all
+     * Returns all loyalty programs in a grouped format suitable for sync.
+     * Groups by odoo_program_id with all eligible barcodes listed.
+     * This mirrors the product sync pattern (/api/products/all).
+     */
+    @GetMapping("/all")
+    public ResponseEntity<Map<String, Object>> getAllForSync() {
+        try {
+            List<Loyalty> all = loyaltyService.getAllLoyalties();
+            return ResponseEntity.ok(Map.of(
+                "status", "success",
+                "data", all,
+                "count", all.size()
+            ));
+        } catch (Exception e) {
+            return ResponseEntity.status(500).body(Map.of(
+                "status", "error",
+                "message", e.getMessage()
+            ));
+        }
     }
 
     @PostMapping
@@ -47,10 +71,45 @@ public class LoyaltyController {
     @PostMapping("/import")
     public ResponseEntity<?> importLoyalties(@RequestParam("file") MultipartFile file) {
         try {
-            List<Loyalty> imported = loyaltyService.importFromExcel(file);
-            return ResponseEntity.ok(imported);
+            String filename = file.getOriginalFilename();
+            List<Loyalty> imported;
+            if (filename != null && filename.toLowerCase().endsWith(".csv")) {
+                imported = loyaltyService.importFromCsv(file);
+            } else {
+                imported = loyaltyService.importFromExcel(file);
+            }
+            return ResponseEntity.ok(Map.of(
+                "status", "success",
+                "imported", imported.size(),
+                "data", imported
+            ));
         } catch (Exception e) {
-            return ResponseEntity.badRequest().body("Error importing loyalties: " + e.getMessage());
+            return ResponseEntity.badRequest().body(Map.of(
+                "status", "error",
+                "message", "Error importing loyalties: " + e.getMessage()
+            ));
+        }
+    }
+
+    /**
+     * POST /api/loyalty/sync
+     * Bulk upsert loyalty programs from sync service.
+     * Accepts a list of loyalty program objects and upserts by odoo_program_id.
+     */
+    @PostMapping("/sync")
+    public ResponseEntity<?> syncLoyalties(@RequestBody List<Loyalty> loyalties) {
+        try {
+            List<Loyalty> synced = loyaltyService.bulkUpsert(loyalties);
+            return ResponseEntity.ok(Map.of(
+                "status", "success",
+                "synced", synced.size(),
+                "data", synced
+            ));
+        } catch (Exception e) {
+            return ResponseEntity.status(500).body(Map.of(
+                "status", "error",
+                "message", e.getMessage()
+            ));
         }
     }
 }

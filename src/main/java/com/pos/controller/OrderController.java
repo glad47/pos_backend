@@ -1,9 +1,10 @@
 package com.pos.controller;
 
 import com.pos.dto.CreateOrderDTO;
+import com.pos.dto.OrderSearchDTO;
 import com.pos.model.Order;
 import com.pos.service.OrderService;
-import org.springframework.beans.factory.annotation.Autowired;
+import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
@@ -11,42 +12,62 @@ import java.util.List;
 
 @RestController
 @RequestMapping("/api/orders")
+@RequiredArgsConstructor
 @CrossOrigin(origins = "*")
 public class OrderController {
 
-    @Autowired
-    private OrderService orderService;
+    private final OrderService orderService;
 
-    @GetMapping
-    public List<Order> getAllOrders() {
-        return orderService.getAllOrders();
-    }
-
-    @GetMapping("/{id}")
-    public ResponseEntity<Order> getOrderById(@PathVariable Long id) {
-        return orderService.getOrderById(id)
-            .map(ResponseEntity::ok)
-            .orElse(ResponseEntity.notFound().build());
-    }
-
-    @GetMapping("/number/{orderNumber}")
-    public ResponseEntity<Order> getOrderByNumber(@PathVariable String orderNumber) {
-        return orderService.getOrderByNumber(orderNumber)
-            .map(ResponseEntity::ok)
-            .orElse(ResponseEntity.notFound().build());
+    @PostMapping("/session/{sessionId}")
+    public ResponseEntity<?> createOrder(@PathVariable Long sessionId, @RequestBody CreateOrderDTO dto) {
+        try {
+            Order order = orderService.createOrder(sessionId, dto);
+            return ResponseEntity.ok(order);
+        } catch (Exception e) {
+            return ResponseEntity.badRequest().body(e.getMessage());
+        }
     }
 
     @GetMapping("/session/{sessionId}")
-    public List<Order> getOrdersBySession(@PathVariable Long sessionId) {
-        return orderService.getOrdersBySession(sessionId);
+    public ResponseEntity<List<Order>> getSessionOrders(@PathVariable Long sessionId) {
+        return ResponseEntity.ok(orderService.getSessionOrders(sessionId));
     }
 
-    @PostMapping
-    public ResponseEntity<?> createOrder(@RequestBody CreateOrderDTO dto) {
+    @GetMapping("/number/{orderNumber}")
+    public ResponseEntity<?> getOrderByNumber(@PathVariable String orderNumber) {
+        return orderService.getOrderByNumber(orderNumber)
+                .map(ResponseEntity::ok)
+                .orElse(ResponseEntity.notFound().build());
+    }
+
+    @PostMapping("/search")
+    public ResponseEntity<List<Order>> searchOrders(@RequestBody OrderSearchDTO searchDTO) {
+        List<Order> orders = orderService.searchOrders(searchDTO);
+        return ResponseEntity.ok(orders);
+    }
+
+    @PutMapping("/{orderId}/sync")
+    public ResponseEntity<?> updateSyncStatus(@PathVariable Long orderId, @RequestParam Boolean synced) {
         try {
-            Order order = orderService.createOrder(dto);
+            Order order = orderService.updateSyncStatus(orderId, synced);
             return ResponseEntity.ok(order);
-        } catch (RuntimeException e) {
+        } catch (Exception e) {
+            return ResponseEntity.badRequest().body(e.getMessage());
+        }
+    }
+
+    @GetMapping("/unsynced")
+    public ResponseEntity<List<Order>> getUnsyncedOrders() {
+        return ResponseEntity.ok(orderService.getUnsyncedOrders());
+    }
+
+    @GetMapping("/{orderId}/json")
+    public ResponseEntity<?> getOrderJson(@PathVariable Long orderId) {
+        try {
+            return orderService.getOrderByNumber(orderId.toString())
+                    .map(order -> ResponseEntity.ok(order.getOrderJson()))
+                    .orElse(ResponseEntity.notFound().build());
+        } catch (Exception e) {
             return ResponseEntity.badRequest().body(e.getMessage());
         }
     }

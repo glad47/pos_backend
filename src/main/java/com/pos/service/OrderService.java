@@ -1,10 +1,13 @@
 package com.pos.service;
 
-import com.pos.dto.CartItemDTO;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.pos.dto.CreateOrderDTO;
+import com.pos.dto.OrderSearchDTO;
 import com.pos.model.*;
 import com.pos.repository.*;
-import org.springframework.beans.factory.annotation.Autowired;
+import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -12,191 +15,263 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
-import java.util.*;
-import java.util.stream.Collectors;
+import java.util.List;
+import java.util.Optional;
 
 @Service
+@RequiredArgsConstructor
 public class OrderService {
 
-    @Autowired
-    private OrderRepository orderRepository;
-
-    @Autowired
-    private ProductRepository productRepository;
-
-    @Autowired
-    private PosSessionRepository sessionRepository;
-
-    @Autowired
-    private LoyaltyRepository loyaltyRepository;
+    private final OrderRepository orderRepository;
+    private final PosSessionRepository sessionRepository;
+    private final ProductRepository productRepository;
+    private final ObjectMapper objectMapper;
 
     @Transactional
-    public Order createOrder(CreateOrderDTO dto) {
-        // Validate session
-        PosSession session = sessionRepository.findById(dto.getSessionId())
-            .orElseThrow(() -> new RuntimeException("Session not found"));
+    public Order createOrder(Long sessionId, CreateOrderDTO dto) throws Exception {
+        PosSession session = sessionRepository.findById(sessionId)
+                .orElseThrow(() -> new RuntimeException("Session not found"));
 
-        if (session.getStatus() == PosSession.SessionStatus.CLOSED) {
-            throw new RuntimeException("Cannot create order - session is closed");
+        if (!session.isActive()) {
+            throw new RuntimeException("Session is not active");
         }
 
         Order order = new Order();
-        order.setOrderNumber(generateOrderNumber());
         order.setSession(session);
-        order.setPaymentMethod(Order.PaymentMethod.valueOf(dto.getPaymentMethod()));
-        order.setCashierName(dto.getCashierName());
-        order.setStatus(Order.OrderStatus.COMPLETED);
-
-        // Build cart map: barcode -> quantity
-        Map<String, Integer> cartMap = new HashMap<>();
-        Map<String, Product> productMap = new HashMap<>();
-        for (CartItemDTO cartItem : dto.getItems()) {
-            Product product = productRepository.findByBarcode(cartItem.getBarcode())
-                .orElseThrow(() -> new RuntimeException("Product not found: " + cartItem.getBarcode()));
-            cartMap.put(product.getBarcode(), cartItem.getQuantity());
-            productMap.put(product.getBarcode(), product);
+        order.setCashierName(session.getCashierName());
+        
+        // Set customer information
+        order.setCustomerName(dto.getCustomerName());
+        order.setCustomerPhone(dto.getCustomerPhone());
+        order.setCustomerVat(dto.getCustomerVat());
+        
+        // Set order type
+        Order.OrderType orderType = dto.getOrderType() != null && dto.getOrderType().equals("RETURN") 
+            ? Order.OrderType.RETURN : Order.OrderType.SALE;
+        order.setOrderType(orderType);
+        
+        // For return orders
+        if (orderType == Order.OrderType.RETURN) {
+            order.setOriginalOrderNumber(dto.getOriginalOrderNumber());
+            order.setReturnReason(dto.getReturnReason());
+            order.setStatus(Order.OrderStatus.REFUNDED);
         }
 
-        // Get active loyalties
-        List<Loyalty> activeLoyalties = loyaltyRepository.findActiveLoyalties(LocalDateTime.now());
+        // Generate order number
+        String orderNumber = generateOrderNumber(session);
+        order.setOrderNumber(orderNumber);
 
-        // Calculate loyalty rewards applied to each reward barcode
-        // Map: rewardBarcode -> list of applied loyalty descriptions and discount amounts
-        Map<String, BigDecimal> rewardDiscounts = new HashMap<>();
-        Map<String, Integer> rewardFreeItems = new HashMap<>();
-        Map<String, List<String>> rewardPromoNames = new HashMap<>();
-
-        for (Loyalty loyalty : activeLoyalties) {
-            List<String> triggerBarcodes = loyalty.getTriggerBarcodes();
-            List<String> rewardBarcodes = loyalty.getRewardBarcodes();
-
-            if (triggerBarcodes.isEmpty() || rewardBarcodes.isEmpty()) continue;
-
-            // Check if any trigger product is in the cart with sufficient quantity
-            boolean triggered = false;
-            int triggerSets = Integer.MAX_VALUE;
-            for (String triggerBarcode : triggerBarcodes) {
-                Integer qty = cartMap.get(triggerBarcode);
-                if (qty != null && qty >= loyalty.getMinQuantity()) {
-                    triggered = true;
-                    int sets = qty / loyalty.getMinQuantity();
-                    triggerSets = Math.min(triggerSets, sets);
-                }
-            }
-
-            if (!triggered) continue;
-
-            // Apply rewards to reward products that are in cart
-            for (String rewardBarcode : rewardBarcodes) {
-                if (!cartMap.containsKey(rewardBarcode)) continue;
-                Product rewardProduct = productMap.get(rewardBarcode);
-                if (rewardProduct == null) continue;
-
-                if (loyalty.isBuyXGetY()) {
-                    // BUY X GET Y: give free items
-                    int freeQty = Math.min(triggerSets * loyalty.getRewardQuantity(), cartMap.get(rewardBarcode));
-                    int existing = rewardFreeItems.getOrDefault(rewardBarcode, 0);
-                    rewardFreeItems.put(rewardBarcode, existing + freeQty);
-                    rewardPromoNames.computeIfAbsent(rewardBarcode, k -> new ArrayList<>())
-                        .add(loyalty.getName() + " (+" + freeQty + " free)");
-                } else if (loyalty.isDiscount()) {
-                    // DISCOUNT: apply percentage discount
-                    int rewardQty = Math.min(triggerSets * loyalty.getRewardQuantity(), cartMap.get(rewardBarcode));
-                    BigDecimal discountableAmount = rewardProduct.getPrice().multiply(new BigDecimal(rewardQty));
-                    BigDecimal discount = discountableAmount.multiply(loyalty.getDiscountPercent())
-                        .divide(new BigDecimal(100), 2, RoundingMode.HALF_UP);
-                    BigDecimal existing = rewardDiscounts.getOrDefault(rewardBarcode, BigDecimal.ZERO);
-                    rewardDiscounts.put(rewardBarcode, existing.add(discount));
-                    rewardPromoNames.computeIfAbsent(rewardBarcode, k -> new ArrayList<>())
-                        .add(loyalty.getName() + " (-" + loyalty.getDiscountPercent() + "%)");
-                }
-            }
-        }
-
-        // Build order items
-        List<OrderItem> orderItems = new ArrayList<>();
         BigDecimal subtotal = BigDecimal.ZERO;
-        BigDecimal totalTax = BigDecimal.ZERO;
-        BigDecimal totalDiscount = BigDecimal.ZERO;
+        BigDecimal discountTotal = BigDecimal.ZERO;
+        BigDecimal taxTotal = BigDecimal.ZERO;
 
-        for (CartItemDTO cartItem : dto.getItems()) {
-            Product product = productMap.get(cartItem.getBarcode());
+        // Process items
+        for (var item : dto.getItems()) {
+            Product product = productRepository.findByBarcode(item.getBarcode())
+                    .orElseThrow(() -> new RuntimeException("Product not found: " + item.getBarcode()));
+
+            OrderItem orderItem = new OrderItem();
+            orderItem.setOrder(order);
+            orderItem.setProduct(product);
+            orderItem.setProductBarcode(item.getBarcode()); // Use barcode from DTO (frontend)
+            orderItem.setProductName(product.getName());
+            orderItem.setQuantity(item.getQuantity());
+            orderItem.setUnitPrice(product.getPrice());
+            orderItem.setTaxRate(product.getTaxRate()); // FIX: Add tax rate
             
-            OrderItem item = new OrderItem();
-            item.setOrder(order);
-            item.setProduct(product);
-            item.setProductBarcode(product.getBarcode());
-            item.setProductName(product.getName());
-            item.setQuantity(cartItem.getQuantity());
-            item.setUnitPrice(product.getPrice());
-            item.setTaxRate(product.getTaxRate() != null ? product.getTaxRate() : BigDecimal.ZERO);
+            // For return orders, make quantities negative
+            int actualQuantity = orderType == Order.OrderType.RETURN ? -Math.abs(item.getQuantity()) : item.getQuantity();
+            orderItem.setQuantity(actualQuantity);
 
-            BigDecimal itemSubtotal = product.getPrice().multiply(new BigDecimal(cartItem.getQuantity()));
-            item.setSubtotal(itemSubtotal);
+            BigDecimal lineSubtotal = product.getPrice().multiply(BigDecimal.valueOf(Math.abs(actualQuantity)));
+            BigDecimal lineDiscount = item.getDiscount() != null ? item.getDiscount() : BigDecimal.ZERO;
+            BigDecimal lineTax = lineSubtotal.subtract(lineDiscount)
+                    .multiply(product.getTaxRate())
+                    .setScale(2, RoundingMode.HALF_UP);
 
-            // Apply loyalty rewards
-            int freeItems = rewardFreeItems.getOrDefault(product.getBarcode(), 0);
-            item.setFreeItems(freeItems);
-            BigDecimal bogoDiscount = product.getPrice().multiply(new BigDecimal(freeItems));
+            orderItem.setSubtotal(lineSubtotal); // FIX: Add subtotal
+            orderItem.setDiscount(lineDiscount);
+            orderItem.setTaxAmount(lineTax);
+            orderItem.setTotalPrice(lineSubtotal.subtract(lineDiscount).add(lineTax));
+            orderItem.setPromotionName(item.getPromotionName());
+            orderItem.setIsReward(item.getIsReward() != null ? item.getIsReward() : false);
 
-            BigDecimal percentDiscount = rewardDiscounts.getOrDefault(product.getBarcode(), BigDecimal.ZERO);
-            BigDecimal itemDiscount = bogoDiscount.add(percentDiscount);
-            item.setDiscountAmount(itemDiscount);
+            order.getItems().add(orderItem);
 
-            // Promotions applied label
-            List<String> promoNames = rewardPromoNames.getOrDefault(product.getBarcode(), Collections.emptyList());
-            if (!promoNames.isEmpty()) {
-                item.setPromotionApplied(String.join(", ", promoNames));
-            }
-
-            BigDecimal taxableAmount = itemSubtotal.subtract(itemDiscount);
-            if (taxableAmount.compareTo(BigDecimal.ZERO) < 0) taxableAmount = BigDecimal.ZERO;
-            BigDecimal itemTax = taxableAmount.multiply(item.getTaxRate()).setScale(2, RoundingMode.HALF_UP);
-            item.setTaxAmount(itemTax);
-
-            BigDecimal itemTotal = taxableAmount.add(itemTax);
-            item.setTotalAmount(itemTotal);
-
-            orderItems.add(item);
-
-            subtotal = subtotal.add(itemSubtotal);
-            totalTax = totalTax.add(itemTax);
-            totalDiscount = totalDiscount.add(itemDiscount);
+            subtotal = subtotal.add(lineSubtotal);
+            discountTotal = discountTotal.add(lineDiscount);
+            taxTotal = taxTotal.add(lineTax);
         }
 
-        order.setItems(orderItems);
+        // For return orders, negate totals
+        if (orderType == Order.OrderType.RETURN) {
+            subtotal = subtotal.negate();
+            discountTotal = discountTotal.negate();
+            taxTotal = taxTotal.negate();
+        }
+
         order.setSubtotal(subtotal);
-        order.setTaxAmount(totalTax);
-        order.setDiscountAmount(totalDiscount);
-        order.setTotalAmount(subtotal.subtract(totalDiscount).add(totalTax));
+        order.setDiscountAmount(discountTotal);
+        order.setTaxAmount(taxTotal);
+        order.setTotalAmount(subtotal.subtract(discountTotal).add(taxTotal));
+
+        try {
+            Order.PaymentMethod paymentMethod = Order.PaymentMethod.valueOf(dto.getPaymentMethod().toUpperCase());
+            order.setPaymentMethod(paymentMethod);
+        } catch (IllegalArgumentException e) {
+            order.setPaymentMethod(Order.PaymentMethod.CASH);
+        }
+
+        order.setNotes(dto.getNotes());
+        
+        // Generate and store JSON
+        String orderJson = generateOrderJson(order, dto);
+        order.setOrderJson(orderJson);
+        
+        // Initially not synced
+        order.setSyncStatus(Boolean.FALSE);
+
+        Order savedOrder = orderRepository.save(order);
 
         // Update session totals
         session.setTotalSales(session.getTotalSales().add(order.getTotalAmount()));
-        session.setTransactionCount(session.getTransactionCount() + 1);
         sessionRepository.save(session);
 
-        return orderRepository.save(order);
+        return savedOrder;
     }
 
-    private String generateOrderNumber() {
+    private String generateOrderJson(Order order, CreateOrderDTO dto) throws Exception {
+        ObjectNode root = objectMapper.createObjectNode();
+        
+        if (order.getOrderType() == Order.OrderType.SALE) {
+            root.put("draft", false);
+            ArrayNode ordersArray = objectMapper.createArrayNode();
+            
+            ObjectNode orderNode = objectMapper.createObjectNode();
+            orderNode.put("id", order.getOrderNumber());
+            
+            ObjectNode dataNode = objectMapper.createObjectNode();
+            dataNode.put("name", "Order " + order.getOrderNumber());
+            dataNode.put("amount_paid", order.getTotalAmount().doubleValue());
+            dataNode.put("amount_total", order.getTotalAmount().doubleValue());
+            dataNode.put("amount_tax", order.getTaxAmount().doubleValue());
+            dataNode.put("amount_return", 0);
+            
+            // Customer info
+            ObjectNode customerNode = objectMapper.createObjectNode();
+            customerNode.put("phone", order.getCustomerPhone() != null ? order.getCustomerPhone() : "");
+            customerNode.put("name", order.getCustomerName() != null ? order.getCustomerName() : "");
+            if (order.getCustomerVat() != null && !order.getCustomerVat().isEmpty()) {
+                customerNode.put("vat", order.getCustomerVat());
+            }
+            dataNode.set("customer", customerNode);
+            
+            // Order lines
+            ArrayNode linesArray = objectMapper.createArrayNode();
+            for (OrderItem item : order.getItems()) {
+                ObjectNode lineNode = objectMapper.createObjectNode();
+                lineNode.put("qty", item.getQuantity());
+                
+                // For reward items, show price as negative or 0 based on display preference
+                if (item.getIsReward()) {
+                    lineNode.put("price_unit", 0); // Show as 0 in invoice as per requirement
+                } else {
+                    lineNode.put("price_unit", item.getUnitPrice().doubleValue());
+                }
+                
+                lineNode.put("product_id", item.getProduct().getId());
+                lineNode.put("discount", item.getDiscount().doubleValue());
+                
+                if (item.getPromotionName() != null) {
+                    lineNode.put("promotion", item.getPromotionName());
+                }
+                if (item.getIsReward()) {
+                    lineNode.put("is_reward", true);
+                }
+                
+                linesArray.add(lineNode);
+            }
+            dataNode.set("order_lines", linesArray);
+            
+            orderNode.set("data", dataNode);
+            ordersArray.add(orderNode);
+            root.set("orders", ordersArray);
+            
+        } else { // RETURN order
+            ArrayNode returnsArray = objectMapper.createArrayNode();
+            
+            ObjectNode returnNode = objectMapper.createObjectNode();
+            returnNode.put("sale_order_name", order.getOriginalOrderNumber());
+            
+            ArrayNode returnLinesArray = objectMapper.createArrayNode();
+            for (OrderItem item : order.getItems()) {
+                ObjectNode lineNode = objectMapper.createObjectNode();
+                lineNode.put("qty", Math.abs(item.getQuantity())); // Always positive in return JSON
+                lineNode.put("price_unit", item.getUnitPrice().doubleValue());
+                lineNode.put("product_id", item.getProduct().getId());
+                lineNode.put("discount", item.getDiscount().doubleValue());
+                
+                returnLinesArray.add(lineNode);
+            }
+            returnNode.set("return_lines", returnLinesArray);
+            returnNode.put("reason", order.getReturnReason() != null ? order.getReturnReason() : "Customer return");
+            
+            returnsArray.add(returnNode);
+            root.set("returns", returnsArray);
+        }
+        
+        return objectMapper.writerWithDefaultPrettyPrinter().writeValueAsString(root);
+    }
+
+    private String generateOrderNumber(PosSession session) {
         String timestamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMddHHmmss"));
-        String uuid = UUID.randomUUID().toString().substring(0, 4).toUpperCase();
-        return "ORD-" + timestamp + "-" + uuid;
+        return String.format("ORD-%s-%s", session.getId(), timestamp);
     }
 
-    public Optional<Order> getOrderById(Long id) {
-        return orderRepository.findById(id);
+    public List<Order> getSessionOrders(Long sessionId) {
+        return orderRepository.findBySessionIdOrderByCreatedAtDesc(sessionId);
     }
 
     public Optional<Order> getOrderByNumber(String orderNumber) {
         return orderRepository.findByOrderNumber(orderNumber);
     }
 
-    public List<Order> getOrdersBySession(Long sessionId) {
-        return orderRepository.findBySessionId(sessionId);
+    @Transactional
+    public List<Order> searchOrders(OrderSearchDTO searchDTO) {
+        BigDecimal minAmount = searchDTO.getTotalAmountMin() != null 
+            ? BigDecimal.valueOf(searchDTO.getTotalAmountMin()) : null;
+        BigDecimal maxAmount = searchDTO.getTotalAmountMax() != null 
+            ? BigDecimal.valueOf(searchDTO.getTotalAmountMax()) : null;
+        
+        Order.OrderType orderType = null;
+        if (searchDTO.getOrderType() != null) {
+            try {
+                orderType = Order.OrderType.valueOf(searchDTO.getOrderType().toUpperCase());
+            } catch (IllegalArgumentException e) {
+                // Invalid order type, will be treated as null
+            }
+        }
+        
+        return orderRepository.searchOrders(
+            searchDTO.getOrderNumber(),
+            searchDTO.getCustomerPhone(),
+            searchDTO.getCustomerName(),
+            searchDTO.getCustomerVat(),
+            minAmount,
+            maxAmount,
+            orderType
+        );
     }
 
-    public List<Order> getAllOrders() {
-        return orderRepository.findAll();
+    @Transactional
+    public Order updateSyncStatus(Long orderId, Boolean synced) {
+        Order order = orderRepository.findById(orderId)
+                .orElseThrow(() -> new RuntimeException("Order not found"));
+        order.setSyncStatus(synced);
+        return orderRepository.save(order);
+    }
+
+    public List<Order> getUnsyncedOrders() {
+        return orderRepository.findBySyncStatusFalseOrderByCreatedAtDesc();
     }
 }

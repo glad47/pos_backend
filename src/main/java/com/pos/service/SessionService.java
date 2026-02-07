@@ -23,7 +23,21 @@ public class SessionService {
     @Autowired
     private OrderRepository orderRepository;
 
+    /**
+     * Open a new session or return existing active session for cashier
+     * @param dto OpenSessionDTO with cashier name and opening cash
+     * @return PosSession (existing active session or newly created session)
+     */
     public PosSession openSession(OpenSessionDTO dto) {
+        // Check if cashier already has an active session
+        Optional<PosSession> existingSession = sessionRepository.findActiveByCashierName(dto.getCashierName());
+        
+        if (existingSession.isPresent()) {
+            // Return existing active session instead of creating new one
+            return existingSession.get();
+        }
+        
+        // No active session found, create a new one
         // Get next session number for this cashier
         Integer maxSessionNumber = sessionRepository.findMaxSessionNumberByCashierName(dto.getCashierName());
         int nextSessionNumber = (maxSessionNumber != null ? maxSessionNumber : 0) + 1;
@@ -37,6 +51,24 @@ public class SessionService {
         session.setTransactionCount(0);
 
         return sessionRepository.save(session);
+    }
+
+    /**
+     * Check if a cashier has an active session
+     * @param cashierName Name of the cashier
+     * @return true if active session exists, false otherwise
+     */
+    public boolean hasActiveSession(String cashierName) {
+        return sessionRepository.hasActiveSession(cashierName);
+    }
+
+    /**
+     * Get active session for a cashier
+     * @param cashierName Name of the cashier
+     * @return Optional<PosSession> containing active session if found
+     */
+    public Optional<PosSession> getActiveSession(String cashierName) {
+        return sessionRepository.findActiveByCashierName(cashierName);
     }
 
     public PosSession closeSession(Long sessionId, CloseSessionDTO dto) {
