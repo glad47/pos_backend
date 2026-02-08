@@ -39,17 +39,17 @@ public class OrderService {
         Order order = new Order();
         order.setSession(session);
         order.setCashierName(session.getCashierName());
-        
+
         // Set customer information
         order.setCustomerName(dto.getCustomerName());
         order.setCustomerPhone(dto.getCustomerPhone());
         order.setCustomerVat(dto.getCustomerVat());
-        
+
         // Set order type
-        Order.OrderType orderType = dto.getOrderType() != null && dto.getOrderType().equals("RETURN") 
-            ? Order.OrderType.RETURN : Order.OrderType.SALE;
+        Order.OrderType orderType = dto.getOrderType() != null && dto.getOrderType().equals("RETURN")
+                ? Order.OrderType.RETURN : Order.OrderType.SALE;
         order.setOrderType(orderType);
-        
+
         // For return orders
         if (orderType == Order.OrderType.RETURN) {
             order.setOriginalOrderNumber(dto.getOriginalOrderNumber());
@@ -78,7 +78,7 @@ public class OrderService {
             orderItem.setQuantity(item.getQuantity());
             orderItem.setUnitPrice(product.getPrice());
             orderItem.setTaxRate(product.getTaxRate()); // FIX: Add tax rate
-            
+
             // For return orders, make quantities negative
             int actualQuantity = orderType == Order.OrderType.RETURN ? -Math.abs(item.getQuantity()) : item.getQuantity();
             orderItem.setQuantity(actualQuantity);
@@ -94,7 +94,7 @@ public class OrderService {
             orderItem.setTaxAmount(lineTax);
             orderItem.setTotalPrice(lineSubtotal.subtract(lineDiscount).add(lineTax));
             orderItem.setPromotionName(item.getPromotionName());
-            orderItem.setIsReward(item.getIsReward() != null ? item.getIsReward() : false);
+            orderItem.setReward(item.getIsReward() != null ? item.getIsReward() : false);
 
             order.getItems().add(orderItem);
 
@@ -123,11 +123,11 @@ public class OrderService {
         }
 
         order.setNotes(dto.getNotes());
-        
+
         // Generate and store JSON
         String orderJson = generateOrderJson(order, dto);
         order.setOrderJson(orderJson);
-        
+
         // Initially not synced
         order.setSyncStatus(Boolean.FALSE);
 
@@ -142,21 +142,21 @@ public class OrderService {
 
     private String generateOrderJson(Order order, CreateOrderDTO dto) throws Exception {
         ObjectNode root = objectMapper.createObjectNode();
-        
+
         if (order.getOrderType() == Order.OrderType.SALE) {
             root.put("draft", false);
             ArrayNode ordersArray = objectMapper.createArrayNode();
-            
+
             ObjectNode orderNode = objectMapper.createObjectNode();
             orderNode.put("id", order.getOrderNumber());
-            
+
             ObjectNode dataNode = objectMapper.createObjectNode();
             dataNode.put("name", "Order " + order.getOrderNumber());
             dataNode.put("amount_paid", order.getTotalAmount().doubleValue());
             dataNode.put("amount_total", order.getTotalAmount().doubleValue());
             dataNode.put("amount_tax", order.getTaxAmount().doubleValue());
             dataNode.put("amount_return", 0);
-            
+
             // Customer info
             ObjectNode customerNode = objectMapper.createObjectNode();
             customerNode.put("phone", order.getCustomerPhone() != null ? order.getCustomerPhone() : "");
@@ -165,44 +165,44 @@ public class OrderService {
                 customerNode.put("vat", order.getCustomerVat());
             }
             dataNode.set("customer", customerNode);
-            
+
             // Order lines
             ArrayNode linesArray = objectMapper.createArrayNode();
             for (OrderItem item : order.getItems()) {
                 ObjectNode lineNode = objectMapper.createObjectNode();
                 lineNode.put("qty", item.getQuantity());
-                
+
                 // For reward items, show price as negative or 0 based on display preference
-                if (item.getIsReward()) {
+                if (item.isReward()) {
                     lineNode.put("price_unit", 0); // Show as 0 in invoice as per requirement
                 } else {
                     lineNode.put("price_unit", item.getUnitPrice().doubleValue());
                 }
-                
+
                 lineNode.put("product_id", item.getProduct().getId());
                 lineNode.put("discount", item.getDiscount().doubleValue());
-                
+
                 if (item.getPromotionName() != null) {
                     lineNode.put("promotion", item.getPromotionName());
                 }
-                if (item.getIsReward()) {
+                if (item.isReward()) {
                     lineNode.put("is_reward", true);
                 }
-                
+
                 linesArray.add(lineNode);
             }
             dataNode.set("order_lines", linesArray);
-            
+
             orderNode.set("data", dataNode);
             ordersArray.add(orderNode);
             root.set("orders", ordersArray);
-            
+
         } else { // RETURN order
             ArrayNode returnsArray = objectMapper.createArrayNode();
-            
+
             ObjectNode returnNode = objectMapper.createObjectNode();
             returnNode.put("sale_order_name", order.getOriginalOrderNumber());
-            
+
             ArrayNode returnLinesArray = objectMapper.createArrayNode();
             for (OrderItem item : order.getItems()) {
                 ObjectNode lineNode = objectMapper.createObjectNode();
@@ -210,16 +210,16 @@ public class OrderService {
                 lineNode.put("price_unit", item.getUnitPrice().doubleValue());
                 lineNode.put("product_id", item.getProduct().getId());
                 lineNode.put("discount", item.getDiscount().doubleValue());
-                
+
                 returnLinesArray.add(lineNode);
             }
             returnNode.set("return_lines", returnLinesArray);
             returnNode.put("reason", order.getReturnReason() != null ? order.getReturnReason() : "Customer return");
-            
+
             returnsArray.add(returnNode);
             root.set("returns", returnsArray);
         }
-        
+
         return objectMapper.writerWithDefaultPrettyPrinter().writeValueAsString(root);
     }
 
@@ -238,11 +238,11 @@ public class OrderService {
 
     @Transactional
     public List<Order> searchOrders(OrderSearchDTO searchDTO) {
-        BigDecimal minAmount = searchDTO.getTotalAmountMin() != null 
-            ? BigDecimal.valueOf(searchDTO.getTotalAmountMin()) : null;
-        BigDecimal maxAmount = searchDTO.getTotalAmountMax() != null 
-            ? BigDecimal.valueOf(searchDTO.getTotalAmountMax()) : null;
-        
+        BigDecimal minAmount = searchDTO.getTotalAmountMin() != null
+                ? BigDecimal.valueOf(searchDTO.getTotalAmountMin()) : null;
+        BigDecimal maxAmount = searchDTO.getTotalAmountMax() != null
+                ? BigDecimal.valueOf(searchDTO.getTotalAmountMax()) : null;
+
         Order.OrderType orderType = null;
         if (searchDTO.getOrderType() != null) {
             try {
@@ -251,15 +251,15 @@ public class OrderService {
                 // Invalid order type, will be treated as null
             }
         }
-        
+
         return orderRepository.searchOrders(
-            searchDTO.getOrderNumber(),
-            searchDTO.getCustomerPhone(),
-            searchDTO.getCustomerName(),
-            searchDTO.getCustomerVat(),
-            minAmount,
-            maxAmount,
-            orderType
+                searchDTO.getOrderNumber(),
+                searchDTO.getCustomerPhone(),
+                searchDTO.getCustomerName(),
+                searchDTO.getCustomerVat(),
+                minAmount,
+                maxAmount,
+                orderType
         );
     }
 
