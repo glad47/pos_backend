@@ -44,6 +44,7 @@ public class SessionService {
 
         PosSession session = new PosSession();
         session.setCashierName(dto.getCashierName());
+        session.setEmployeeId(dto.getEmployeeId()); // Set employee ID
         session.setSessionNumber(nextSessionNumber);
         session.setOpeningCash(dto.getOpeningCash() != null ? dto.getOpeningCash() : BigDecimal.ZERO);
         session.setStatus(PosSession.SessionStatus.OPEN);

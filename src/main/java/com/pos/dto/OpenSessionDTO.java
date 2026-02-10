@@ -10,5 +10,6 @@ import java.math.BigDecimal;
 @AllArgsConstructor
 public class OpenSessionDTO {
     private String cashierName;
+    private String employeeId;
     private BigDecimal openingCash;
 }

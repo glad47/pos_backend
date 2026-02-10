@@ -29,6 +29,9 @@ public class PosSession {
     @Column(name = "cashier_name", nullable = false)
     private String cashierName;
 
+    @Column(name = "employee_id", length = 50)
+    private String employeeId; // Reference to employee who opened this session
+
     @Column(name = "opening_cash", nullable = false, precision = 10, scale = 2)
     private BigDecimal openingCash = BigDecimal.ZERO;
 
